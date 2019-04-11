@@ -25,5 +25,6 @@ How to Do step.
  1.	collect data by using Steam Scraper
  2.	change collected review file’s name to rep.txt and run Data_to_DB.py
  3.	run i_index.py to build inverted index dictionary file.
- 4. make tf-idf and gensim similarity model run make_model.py and make_gensim_dic.py
- 4.	run api.py to run http server.
+ 4. select a genre from genres column run select_genre.py
+ 5. make tf-idf and gensim similarity model run make_model.py and make_gensim_dic.py 
+ 6.	run api.py to run http server.
