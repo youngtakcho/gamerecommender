@@ -29,7 +29,7 @@ How to Do step.
  5. make tf-idf and gensim similarity model run make_model.py and make_gensim_dic.py 
  6.	run api.py to run http server.
  
- need more information? go to [my blog]<https://youngtakcho.github.io/>
+ need more information? go to my blog <https://youngtakcho.github.io/>
  
  
 if you want to download my DB Download here: https://drive.google.com/file/d/14tqRWLkw0lzZ4ycvavmSVzYMH52LNYGk/view?usp=sharing
