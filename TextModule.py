@@ -20,7 +20,13 @@ import numbers
 from sklearn.feature_extraction.text import CountVectorizer
 import time
 from sklearn.preprocessing import normalize
+import random
 
+def split_data(data, prob):
+    results = [], []
+    for row in data:
+        results[0 if random.random() < prob else 1].append(row)
+    return results
 
 class CountVectorizer:
     # dictionary = {"word": [total occurrence number of the word in all documents ,{d_id: word_counter}]}
@@ -64,7 +70,6 @@ class CountVectorizer:
         return gensim.parsing.preprocess_string(text, CUSTOM_FILTERS)
 
     def _count_vocab(self,raw_docs,fixed_vocab=False,y=None):
-        inverted_index_dict = {}
         j_indices = []
         indptr = []
         if fixed_vocab:
@@ -80,9 +85,9 @@ class CountVectorizer:
             doc = self.preprocess(raw_doc)
             for feature in doc:
                 if y is not None:
-                    if feature not in inverted_index_dict:
-                        inverted_index_dict[feature] = set()
-                    inverted_index_dict[feature].add(y[index])
+                    if feature not in self.inverted_index_dict:
+                        self.inverted_index_dict[feature] = set()
+                    self.inverted_index_dict[feature].add(y[index])
                 try:
                     feature_idx = vocab[feature]
                     if feature_idx not in feature_counter:
@@ -106,7 +111,6 @@ class CountVectorizer:
         X = sp.csr_matrix((values,j_indices,indptr),shape=(len(indptr) -1 ,len(vocab)),dtype=np.int64)
         X.sort_indices()
         if y is not None:
-            self.inverted_index_dict = inverted_index_dict
             self.X = X
         return vocab,X
 
@@ -129,6 +133,7 @@ class CountVectorizer:
         if max_doc_count < min_doc_count:
             raise ValueError("Max and Min values of doc_count error Max < Min")
         self.vocab = vocab
+        self.X = X
         return X
 
     def transform(self,raw_docs):
@@ -145,7 +150,7 @@ class TfIdfTransFormer():
         self.norm = norm
         return
 
-    def fit(self, X ):
+    def fit(self, X):
         if not sp.isspmatrix(X):
             X = sp.csr_matrix(X)
         dtype = X.dtype if X.dtype in FLOAT_DTYPES else np.float64
@@ -210,11 +215,18 @@ class TfidfVectorizer(CountVectorizer):
         return self._tfidf.transform(X,copy=False)
 
 
+class Similarity:
+
+    def calculate(self,X:sp.csr_matrix,q_X:sp.csr_matrix):
+        q_X = normalize(q_X,norm="l1")
+        sim = q_X * X.transpose()
+        # sim = sim.transpose()
+        return sim.toarray()[0]
+
 class NaiveBayes:
 
     def __init__(self):
-        self.classes = defaultdict()
-        self.classes.default_factory = self.classes.__len__
+        self.classes = None
         self.class_dictionary = {}
         self.n_doc_in_classes = {}
         self.total_words_in_class = {}
@@ -225,8 +237,10 @@ class NaiveBayes:
     def fit(self,X,y):
         r_index = 0
         # sum all number of words for each classes.
+        classes = defaultdict()
+        classes.default_factory = classes.__len__
         for cls in y:
-            class_id = self.classes[cls]
+            class_id = classes[cls]
             if class_id not in self.class_dictionary:
                 self.class_dictionary[class_id] = X.getrow(r_index)
                 self.n_doc_in_classes[class_id] = 1
@@ -236,19 +250,19 @@ class NaiveBayes:
             r_index += 1
         self.total_doc = r_index
 
-        # calculate probability of words in class
+        for cls in classes:
+            self.total_words_in_class[cls] = self.class_dictionary[classes[cls]].sum()
+            d_smoothing_factor = self.class_dictionary[classes[cls]].shape[1]
+            Tf_vec = self.class_dictionary[classes[cls]].getrow(0).toarray() + 1  # for smoothing
+            total_number_of_term = self.total_words_in_class[cls]
+            p_words_g_class = Tf_vec / (total_number_of_term + d_smoothing_factor)  # for smoothing
+            np.log(p_words_g_class)
+            p_d = sp.lil_matrix((p_words_g_class.shape[1], p_words_g_class.shape[1]), dtype=np.float64)
+            for i in range(0, p_words_g_class.shape[1]):
+                p_d[i, i] = p_words_g_class[0][i]
+            self.class_word_probability[cls] = p_d
 
-        for cls in self.classes:
-            self.total_words_in_class[cls] = self.class_dictionary[self.classes[cls]].sum()
-            d_smoothing_factor = self.class_dictionary[self.classes[cls]].shape[1]
-
-            a = self.class_dictionary[self.classes[cls]].getrow(0).toarray() + 1
-
-            b = self.total_words_in_class[cls]
-            c = self.n_doc_in_classes[self.classes[cls]]
-            d = self.total_doc
-            e = a/(b+d_smoothing_factor)
-            self.class_word_probability[cls] = sp.csr_matrix(e)
+        self.classes = dict(classes)
 
     def predict(self,X):
         predicted_results = []
@@ -259,13 +273,8 @@ class NaiveBayes:
                 cp_target = target.getrow(0)
                 boolen_target = cp_target.getrow(0)
                 boolen_target.data.fill(1)
-                class_id = self.classes[cls]
                 proba_in_class = self.class_word_probability[cls]
-
-
-                p_d =sp.csr_matrix(np.diag(proba_in_class.toarray()[0]))
-
-                proba_in_query = (boolen_target) * p_d
+                proba_in_query = (boolen_target) * proba_in_class
                 proba_in_query = proba_in_query.log1p()
                 for i in range(0,len(proba_in_query.data)):
                     proba_in_query.data[i] *=  target.data[i]
@@ -282,19 +291,18 @@ class NaiveBayes:
 if __name__ == "__main__":
     i_dic = {}
     conn = sqlite3.connect("game_data_modi.db")
-    c = conn.cursor()
-    c.execute("select r_id , text from reviews")
-    rows = c.fetchall()
-    y = [y for y, x in rows]
-    X = [x for y, x in rows]
-    start= time.time()
-
 
     train_and_save = True
     if train_and_save:
+        c = conn.cursor()
+        c.execute("select r_id , text from reviews")
+        rows = c.fetchall()
+        y = [y for y, x in rows]
+        X = [x for y, x in rows]
+        start = time.time()
         print("start counting")
         wc = CountVectorizer()
-        X_count = wc.fit_transform(X)
+        X_count = wc.fit_transform(X,y=y)
         tfidf = TfIdfTransFormer()
         X_tfidf = tfidf.fit(X_count)
         q = ["great music and beautiful background",]
@@ -308,4 +316,132 @@ if __name__ == "__main__":
         with open("MyTfIdfVectorizer.pickle", "wb") as f:
             pickle.dump(tfidf, f)
     else:
-        print("Done") 
+        with open("MyCountVectorizer.pickle","rb") as f:
+            wc:CountVectorizer = pickle.load(f)
+        with open("MyTfIdfVectorizer.pickle", "rb") as f:
+            tfidf:TfidfVectorizer = pickle.load(f)
+
+        load_from_db = True
+
+        if load_from_db:
+            dic2 = {}
+            data_list = []
+            conn = sqlite3.connect("game_data_modi.db")
+            c = conn.cursor()
+            q = """select text,p_genre from reviews,products where reviews.product_id == products.id and hours > 50 and length(text) > 100 and p_genre NOT like "%Action%" and p_genre NOT like "%Simulation%" and p_genre NOT like "%Indie%"  and p_genre not like "%Adventure%" and p_genre not like "RPG" """
+            c.execute(q)
+            rows = c.fetchall()
+            for text, genres in rows:
+                g = genres
+                if g == "Animation &amp; Modeling" or g == "Design &amp; Illustration" or g == "None" or g == "Audio Production" \
+                        or g == "Software Training" or g == "Video Production" or g == "Web Publishing" or g == "Utilities":
+
+                    continue
+                elif (g == "Free to Play" or g == "Early Access") and len(genres.split(",")) > 2:
+                    g = genres
+                dic = []
+                dic.append(g)
+                dic.append(text)
+                if g not in dic2:
+                    dic2[g] = 0
+                dic2[g] += 1
+                data_list.append(dic)
+
+            c = conn.cursor()
+            q = """select text,p_genre from reviews,products where reviews.product_id == products.id and hours > 150 and length(text) > 200 and p_genre like "Action" LIMIT 6000"""
+            c.execute(q)
+            rows = c.fetchall()
+            for text, genres in rows:
+                g = "Action"
+                dic = []
+                dic.append(g)
+                dic.append(text)
+                if g not in dic2:
+                    dic2[g] = 0
+                dic2[g] += 1
+                data_list.append(dic)
+
+            c = conn.cursor()
+            q = """select text,p_genre from reviews,products where reviews.product_id == products.id and hours > 150 and length(text) > 200 and p_genre like "Simulation" LIMIT 6000"""
+            c.execute(q)
+            rows = c.fetchall()
+            for text, genres in rows:
+                g = "Simulation"
+                dic = []
+                dic.append(g)
+                dic.append(text)
+                if g not in dic2:
+                    dic2[g] = 0
+                dic2[g] += 1
+                data_list.append(dic)
+            c = conn.cursor()
+
+            q = """select text,p_genre from reviews,products where reviews.product_id == products.id and hours > 150 and length(text) > 200 and p_genre like "Indie" LIMIT 6000"""
+            c.execute(q)
+            rows = c.fetchall()
+            for text, genres in rows:
+                g = "Indie"
+                dic = []
+                dic.append(g)
+                dic.append(text)
+                if g not in dic2:
+                    dic2[g] = 0
+                dic2[g] += 1
+                data_list.append(dic)
+
+            q = """select text,p_genre from reviews,products where reviews.product_id == products.id and hours > 150 and length(text) > 200 and p_genre like "Adventure" LIMIT 6000"""
+            c.execute(q)
+            rows = c.fetchall()
+            for text, genres in rows:
+                g = "Adventure"
+                dic = []
+                dic.append(g)
+                dic.append(text)
+                if g not in dic2:
+                    dic2[g] = 0
+                dic2[g] += 1
+                data_list.append(dic)
+
+            q = """select text,p_genre from reviews,products where reviews.product_id == products.id and hours > 150 and length(text) > 200 and p_genre like "RPG" LIMIT 6000"""
+            c.execute(q)
+            rows = c.fetchall()
+            for text, genres in rows:
+                g = "RPG"
+                dic = []
+                dic.append(g)
+                dic.append(text)
+                if g not in dic2:
+                    dic2[g] = 0
+                dic2[g] += 1
+                data_list.append(dic)
+
+            print(dic2)
+
+            tuples = [tuple(x) for x in data_list]
+            data = tuples
+
+            random.seed(0)
+            train_data, test_data = split_data(data, 0.70)
+
+            X = [x for y, x in train_data]
+            y = [y for y, x in train_data]
+
+
+
+            wc_X = wc.transform(X)
+
+            NB = NaiveBayes()
+            NB.fit(wc_X,y)
+            # import sys
+            # sys.setrecursionlimit()
+            with open("MyNaiveBayes.pickle", "wb") as f:
+                pickle.dump(NB, f)
+        else:
+            with open("MyNaiveBayes.pickle", "rb") as f:
+                NB = pickle.load(f)
+
+
+        query = "beautiful and great background music"
+        q_X = wc.transform([query])
+        result = NB.predict(q_X)
+        print(result)
